@@ -1,0 +1,12 @@
+{
+  "project": {
+    "slug": "demo-client",
+    "framework": "nextjs"
+  },
+  "rawText": "PASTE CLIENT INFO HERE",
+  "assets": {
+    "logoUrl": "",
+    "galleryUrls": []
+  },
+  "requestedChanges": []
+}

@@ -1,0 +1,7 @@
+Use Next.js App Router
+Tailwind is enabled
+Create sections: Hero, About, Services, Gallery, Contact, Footer
+All content must come from parsed client rawText
+Use /public/assets/logo.* and /public/assets/gallery/*
+Return code only in specified files
+Don’t change build configs unless necessary

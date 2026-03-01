@@ -1,0 +1,16 @@
+{
+  "framework": "Next.js (App Router)",
+  "styling": "TailwindCSS",
+  "sections": [
+    "Hero",
+    "About",
+    "Services",
+    "Gallery",
+    "Contact",
+    "Footer"
+  ],
+  "assets": {
+    "logo": "/public/assets/logo.*",
+    "gallery": "/public/assets/gallery/*"
+  }
+}

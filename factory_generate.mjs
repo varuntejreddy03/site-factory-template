@@ -10,6 +10,9 @@ const ROOT = process.cwd();
 function readJSON(p) {
   return JSON.parse(fs.readFileSync(p, "utf8"));
 }
+
+const payload = JSON.parse(fs.readFileSync("client_payload/payload.json", "utf8"));
+console.log("Loaded payload:", payload.project?.slug);
 function readText(p, fallback = "") {
   return fs.existsSync(p) ? fs.readFileSync(p, "utf8") : fallback;
 }

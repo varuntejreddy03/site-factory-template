@@ -21,9 +21,6 @@ jobs:
       - name: Read payload
         id: payload
         run: |
-          echo "PAYLOAD_JSON<<EOF" >> $GITHUB_ENV
-          cat client_payload/payload.json >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
           echo "Loaded payload.json ✅"
 
       - name: Scaffold Next.js app

@@ -67,13 +67,32 @@ function guessExtFromUrl(urlStr) {
   return "";
 }
 
+class TruncatedOutputError extends Error {
+  constructor(raw) {
+    super(
+      "AI output was truncated before the JSON closed (hit token limit).\n" +
+      "Raw tail (last 200 chars):\n" + raw.slice(-200)
+    );
+    this.name = "TruncatedOutputError";
+    this.raw = raw;
+  }
+}
+
+function looksLikeTruncated(s) {
+  const t = s.trim();
+  return t.startsWith("{") && !t.endsWith("}");
+}
+
 function normalizeModelOutputToFileMap(text) {
   const cleaned = stripCodeFences(text).trim();
+
+  if (looksLikeTruncated(cleaned)) throw new TruncatedOutputError(cleaned);
 
   let obj;
   try {
     obj = JSON.parse(cleaned);
   } catch (e) {
+    if (looksLikeTruncated(cleaned)) throw new TruncatedOutputError(cleaned);
     throw new Error(
       "AI output was not valid JSON. Ask the model to return JSON only.\n" +
       "Raw (first 400 chars):\n" + cleaned.slice(0, 400)
@@ -451,9 +470,46 @@ async function main() {
   ];
 
   console.log("🤖 Calling AI with fallback providers...");
-  const aiText = await callAIWithFallback({ messages });
 
-  const files = normalizeModelOutputToFileMap(aiText);
+  // Build a compact version of the prompt for low-token fallback
+  const compactSystem =
+    "You are a Next.js expert. Return ONLY valid JSON, no markdown, no backticks.\n" +
+    'Shape: { "files": { "app/layout.tsx": "...", "app/page.tsx": "..." } }\n' +
+    "Write MINIMAL but functional TypeScript/Tailwind code. No comments. No blank lines.";
+
+  const compactUser =
+    "Business name: " + (payload?.name || payload?.project?.name || "Business") + "\n" +
+    "Services: " + (Array.isArray(payload?.services) ? payload.services.slice(0,5).join(", ") : "") + "\n" +
+    "Phone: " + (payload?.contact?.phone || payload?.phone || "") + "\n" +
+    "Email: " + (payload?.contact?.email || payload?.email || "") + "\n" +
+    "Logo: " + logoPathHint + "\n" +
+    "Gallery: " + (gallerySaved.length ? gallerySaved.join(", ") : "none") + "\n\n" +
+    "Generate layout.tsx (metadata + font) and page.tsx (Hero, Services grid, Contact, Footer).";
+
+  const compactMessages = [
+    { role: "system", content: compactSystem },
+    { role: "user",   content: compactUser },
+  ];
+
+  let aiText;
+  try {
+    aiText = await callAIWithFallback({ messages });
+  } catch (e) {
+    throw e; // non-truncation errors bubble up normally
+  }
+
+  let files;
+  try {
+    files = normalizeModelOutputToFileMap(aiText);
+  } catch (e) {
+    if (e.name === "TruncatedOutputError") {
+      console.warn("⚠️  Output truncated — retrying with compact prompt (lower token usage)...");
+      const aiText2 = await callAIWithFallback({ messages: compactMessages });
+      files = normalizeModelOutputToFileMap(aiText2);
+    } else {
+      throw e;
+    }
+  }
 
   const allowed = [
     "app/page.tsx",

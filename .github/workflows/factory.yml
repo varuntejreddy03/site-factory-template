@@ -46,7 +46,7 @@ jobs:
           GEMINI_MODEL: "gemini-1.5-pro"
 
         run: |
-          node factory/factory_generate.mjs
+          node factory_generate.mjs
 
       - name: Build check
         id: build

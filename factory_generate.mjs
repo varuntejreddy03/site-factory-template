@@ -172,64 +172,148 @@ async function callGemini({
   return text.trim();
 }
 
-// FIX #3: Removed forcedMessages wrapper — main() system prompt already enforces JSON-only.
-// FIX #2: Default token limit raised from 1200 → 8000.
+// ---------------------------------------------------------------------------
+// Per-provider model fallback lists
+// If the env var model fails (404/decommissioned), the next in the list is tried.
+// ---------------------------------------------------------------------------
+
+const GEMINI_MODELS = (process.env.GEMINI_MODEL
+  ? [process.env.GEMINI_MODEL]
+  : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"]);
+
+const GROQ_MODELS = (process.env.GROQ_MODEL
+  ? [process.env.GROQ_MODEL]
+  : ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192"]);
+
+const OPENROUTER_MODELS = (process.env.OPENROUTER_MODEL
+  ? [process.env.OPENROUTER_MODEL]
+  : ["openai/gpt-4o-mini", "mistralai/mistral-7b-instruct", "nousresearch/hermes-3-llama-3.1-8b"]);
+
+function isModelError(errMsg) {
+  // Detect decommissioned / not-found model errors across providers
+  return (
+    errMsg.includes("not found") ||
+    errMsg.includes("decommissioned") ||
+    errMsg.includes("does not exist") ||
+    errMsg.includes("model_not_found") ||
+    errMsg.includes("NOT_FOUND") ||
+    errMsg.includes("404")
+  );
+}
+
+function isInsufficientCreditsError(errMsg) {
+  return errMsg.includes("402") || errMsg.includes("credits") || errMsg.includes("billing");
+}
+
 async function callAIWithFallback({ messages }) {
   const order = (process.env.AI_PROVIDERS || "gemini,groq,openrouter")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const maxTokens = Number(process.env.AI_MAX_TOKENS || 8000);
-  const temperature = Number(process.env.AI_TEMPERATURE || 0.4);
+  // OpenRouter gets a lower token cap to stay within free-tier credit limits.
+  // Increase OPENROUTER_MAX_TOKENS if you have paid credits.
+  const globalMaxTokens   = Number(process.env.AI_MAX_TOKENS || 8000);
+  const openrouterTokens  = Number(process.env.OPENROUTER_MAX_TOKENS || 1200);
+  const temperature       = Number(process.env.AI_TEMPERATURE || 0.4);
 
   const errors = [];
 
   for (const provider of order) {
     try {
+      // ---------- Gemini ----------
       if (provider === "gemini") {
         const key = process.env.GEMINI_API_KEY;
-        // FIX #4: Updated to a stable Gemini model string — override via GEMINI_MODEL env if needed.
-        const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
         if (!key) throw new Error("Missing GEMINI_API_KEY");
 
-        return await callGemini({
-          apiKey: key,
-          model,
-          messages,
-          temperature,
-          maxOutputTokens: maxTokens,
-        });
+        let lastErr;
+        for (const model of GEMINI_MODELS) {
+          try {
+            console.log(`   [gemini] trying model: ${model}`);
+            return await callGemini({
+              apiKey: key,
+              model,
+              messages,
+              temperature,
+              maxOutputTokens: globalMaxTokens,
+            });
+          } catch (e) {
+            lastErr = e;
+            if (isModelError(String(e.message))) {
+              console.warn(`   [gemini] model ${model} not available, trying next...`);
+              continue;
+            }
+            throw e; // non-model error — surface immediately
+          }
+        }
+        throw lastErr;
       }
 
+      // ---------- Groq ----------
       if (provider === "groq") {
         const key = process.env.GROQ_API_KEY;
-        const model = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
         if (!key) throw new Error("Missing GROQ_API_KEY");
 
-        return await callOpenAICompatible({
-          endpoint: "https://api.groq.com/openai/v1/chat/completions",
-          apiKey: key,
-          model,
-          messages,
-          temperature,
-          max_tokens: maxTokens,
-        });
+        let lastErr;
+        for (const model of GROQ_MODELS) {
+          try {
+            console.log(`   [groq] trying model: ${model}`);
+            return await callOpenAICompatible({
+              endpoint: "https://api.groq.com/openai/v1/chat/completions",
+              apiKey: key,
+              model,
+              messages,
+              temperature,
+              max_tokens: globalMaxTokens,
+            });
+          } catch (e) {
+            lastErr = e;
+            if (isModelError(String(e.message))) {
+              console.warn(`   [groq] model ${model} decommissioned, trying next...`);
+              continue;
+            }
+            throw e;
+          }
+        }
+        throw lastErr;
       }
 
+      // ---------- OpenRouter ----------
       if (provider === "openrouter") {
         const key = process.env.OPENROUTER_API_KEY;
-        const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
         if (!key) throw new Error("Missing OPENROUTER_API_KEY");
 
-        return await callOpenAICompatible({
-          endpoint: "https://openrouter.ai/api/v1/chat/completions",
-          apiKey: key,
-          model,
-          messages,
-          temperature,
-          max_tokens: maxTokens,
-        });
+        let lastErr;
+        for (const model of OPENROUTER_MODELS) {
+          try {
+            console.log(`   [openrouter] trying model: ${model} (max_tokens: ${openrouterTokens})`);
+            return await callOpenAICompatible({
+              endpoint: "https://openrouter.ai/api/v1/chat/completions",
+              apiKey: key,
+              model,
+              messages,
+              temperature,
+              max_tokens: openrouterTokens,
+            });
+          } catch (e) {
+            lastErr = e;
+            const msg = String(e.message);
+            if (isModelError(msg)) {
+              console.warn(`   [openrouter] model ${model} not available, trying next...`);
+              continue;
+            }
+            if (isInsufficientCreditsError(msg)) {
+              // No point trying other models — it's a credits issue.
+              throw new Error(
+                `OpenRouter has insufficient credits for ${openrouterTokens} tokens. ` +
+                `Add credits at https://openrouter.ai/settings/credits or lower OPENROUTER_MAX_TOKENS. ` +
+                `Original: ${msg.slice(0, 200)}`
+              );
+            }
+            throw e;
+          }
+        }
+        throw lastErr;
       }
 
       throw new Error(`Unknown provider: ${provider}`);

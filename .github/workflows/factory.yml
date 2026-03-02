@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  generate-build-deploy:
+  build-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,81 +17,47 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
-      - name: Read payload
-        id: payload
-        run: |
-          echo "Loaded payload.json ✅"
-
-      - name: Scaffold Next.js app
-        run: |
-          rm -rf app_src
-          npx create-next-app@latest app_src --ts --eslint --tailwind --app --src-dir --import-alias "@/*" --use-npm
-
-      - name: Install dependencies (app)
+      # If your Next.js app is in a subfolder, change this path.
+      # Example: app folder is "site" or "app_src".
+      - name: Install dependencies
         run: |
           cd app_src
           npm install
 
-      - name: Generate site files with AI (OpenRouter/Groq/Gemini)
-        env:
-          AI_PROVIDERS: "openrouter,groq,gemini"  # fallback order
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-          # optional: choose models per provider
-          OPENROUTER_MODEL: "anthropic/claude-3.5-sonnet"
-          GROQ_MODEL: "llama-3.1-70b-versatile"
-          GEMINI_MODEL: "gemini-1.5-pro"
-
-        run: |
-          node factory_generate.mjs
-
-      - name: Build check
+      - name: Build
         id: build
         run: |
           cd app_src
           npm run build
 
-      # Optional: Auto-fix once if build fails (placeholder)
-      # You'll implement actual fix logic in factory_fix.mjs later.
-      - name: Auto-fix once if build fails
-        if: failure() && steps.build.outcome == 'failure'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          echo "Build failed. Running one auto-fix attempt..."
-          node factory/factory_fix.mjs
-          cd app_src
-          npm run build
-
-      - name: Deploy to Vercel (per-client project)
+      - name: Deploy to Vercel
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          # Optional, if your deploy script uses it:
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           cd app_src
           npm i -g vercel
-          node ../factory/vercel_deploy_per_client.mjs
+          # Option 1 (recommended): deploy via vercel.json + linked project
+          vercel pull --yes --environment=production --token $VERCEL_TOKEN
+          vercel build --prod --token $VERCEL_TOKEN
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token $VERCEL_TOKEN)
 
-      - name: Commit generated app back into repo
-        run: |
-          rm -rf site
-          mv app_src site
-          git config user.name "site-factory-bot"
-          git config user.email "site-factory-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "Generate site" || echo "No changes to commit"
-          git push || true
+          echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_ENV
+          echo "Deployed to: $DEPLOY_URL"
 
       - name: Notify Worker
+        if: env.DEPLOY_URL != ''
         env:
           WORKER_NOTIFY_URL: ${{ secrets.WORKER_NOTIFY_URL }}
           NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
           REPO: ${{ github.repository }}
           DEPLOY_URL: ${{ env.DEPLOY_URL }}
-          CLIENT_SLUG: ${{ env.CLIENT_SLUG }}
+          # If you want, set CLIENT_SLUG as a repo variable or secret:
+          CLIENT_SLUG: ${{ vars.CLIENT_SLUG }}
         run: |
           curl -X POST "$WORKER_NOTIFY_URL" \
             -H "content-type: application/json" \
